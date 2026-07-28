@@ -3,13 +3,10 @@ set -e
 
 export VLESS_PORT=${VLESS_PORT:-"80"}
 
-# 設定工作目錄為當前資料夾
-CD_PATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "$PWD")"
-cd "$CD_PATH"
-
-# 改為直接在當前目錄下建立 data 資料夾
-export FILE_PATH="${PWD}"
-export DATA_PATH="${PWD}/singbox_data"
+# 強制指定工作目錄為 /root
+export FILE_PATH="/root"
+export DATA_PATH="/root/singbox_data"
+cd "$FILE_PATH"
 mkdir -p "$DATA_PATH"
 
 UUID_FILE="${FILE_PATH}/uuid.txt"
@@ -54,21 +51,21 @@ download_file() {
   fi
 }
 
-# 1. 下載 sing-box 到當前目錄
+# 下載 sing-box 直接存為 /root/sing-box
 SINGBOX_BIN="${FILE_PATH}/sing-box"
 if [ ! -f "$SINGBOX_BIN" ]; then
   download_file "${BASE_URL}/sb" "$SINGBOX_BIN"
   chmod +x "$SINGBOX_BIN"
 fi
 
-# 2. 下載 cloudflared 到當前目錄
+# 下載 cloudflared 直接存為 /root/cloudflared
 CF_BIN="${FILE_PATH}/cloudflared"
 if [ ! -f "$CF_BIN" ]; then
   download_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" "$CF_BIN"
   chmod +x "$CF_BIN"
 fi
 
-# 修正 config.json：補全 transport 設定為 ws，與 Argo tunnel 搭配
+# 寫入 /root/config.json，加入 WebSocket 傳輸協議
 cat > "${FILE_PATH}/config.json" <<EOF
 {
   "log": { "disabled": true },
@@ -118,7 +115,6 @@ fi
 ISP=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F'"' '{print $26"-"$18}' || echo "0.0")
 
 > "${FILE_PATH}/list.txt"
-# path 改為 / 對應 sing-box 配置
 echo "vless://${UUID}@${ARGO_DOMAIN}:443?type=ws&path=%2F&security=tls&host=${ARGO_DOMAIN}&sni=${ARGO_DOMAIN}#Argo-VLESS-${ISP}" >> "${FILE_PATH}/list.txt"
 
 base64 "${FILE_PATH}/list.txt" | tr -d '\n' > "${FILE_PATH}/sub.txt"
