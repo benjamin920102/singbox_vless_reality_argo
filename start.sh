@@ -3,7 +3,7 @@ set -e
 
 export REALITY_PORT=${REALITY_PORT:-"80"}
 
-cd "$(dirname "$0")"
+cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
 
 export FILE_PATH="${PWD}/.npm"
 export DATA_PATH="${PWD}/singbox_data"
@@ -24,12 +24,17 @@ fi
 
 ARCH=$(uname -m)
 BASE_URL=""
+CF_ARCH=""
+
 if [[ "$ARCH" == "arm"* ]] || [[ "$ARCH" == "aarch64" ]]; then
   BASE_URL="https://arm64.ssss.nyc.mn"
+  CF_ARCH="arm64"
 elif [[ "$ARCH" == "amd64"* ]] || [[ "$ARCH" == "x86_64" ]]; then
   BASE_URL="https://amd64.ssss.nyc.mn"
+  CF_ARCH="amd64"
 elif [[ "$ARCH" == "s390x" ]]; then
   BASE_URL="https://s390x.ssss.nyc.mn"
+  CF_ARCH="s390x"
 else
   echo "不支持的架构: $ARCH"
   exit 1
@@ -59,6 +64,12 @@ for entry in "${FILE_INFOS[@]}"; do
   chmod +x "$NEW_NAME"
   FILE_MAP[$NAME]="$NEW_NAME"
 done
+
+CF_BIN="${FILE_PATH}/cloudflared"
+if [ ! -f "$CF_BIN" ]; then
+  download_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" "$CF_BIN"
+  chmod +x "$CF_BIN"
+fi
 
 KEY_FILE="${FILE_PATH}/key.txt"
 if [ -f "$KEY_FILE" ]; then
@@ -96,36 +107,7 @@ cat > "${FILE_PATH}/config.json" <<EOF
       }
     }
   ],
-  "outbounds": [
-    {
-      "type": "selector",
-      "tag": "select",
-      "outbounds": ["cf-out", "direct"]
-    },
-    {
-      "type": "vless",
-      "tag": "cf-out",
-      "server": "162.159.193.9",
-      "server_port": 2053,
-      "uuid": "$UUID",
-      "tls": {
-        "enabled": true,
-        "server_name": "your-cf-domain.com",
-        "insecure": false
-      },
-      "transport": {
-        "type": "ws",
-        "path": "/your-path",
-        "headers": {
-          "Host": "your-cf-domain.com"
-        }
-      }
-    },
-    {
-      "type": "direct",
-      "tag": "direct"
-    }
-  ]
+  "outbounds": [{"type": "direct"}]
 }
 EOF
 
@@ -133,11 +115,29 @@ EOF
 SINGBOX_PID=$!
 echo "[SING-BOX] 启动完成 PID=$SINGBOX_PID"
 
-IP=$(curl -s --max-time 2 ipv4.ip.sb || curl -s --max-time 1 api.ipify.org || echo "IP_ERROR")
+echo "[Cloudflared] 正在启动 Cloudflare Argo Tunnel..."
+nohup "$CF_BIN" tunnel --url http://127.0.0.1:${REALITY_PORT} --no-autoupdate > "${FILE_PATH}/argo.log" 2>&1 &
+CF_PID=$!
+
+ARGO_DOMAIN=""
+for i in {1..30}; do
+  sleep 2
+  ARGO_DOMAIN=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "${FILE_PATH}/argo.log" | sed 's|https://||' | tail -n 1)
+  if [ -n "$ARGO_DOMAIN" ]; then
+    echo -e "\e[1;32m[Cloudflared] 成功获取 Argo 域名: ${ARGO_DOMAIN}\e[0m"
+    break
+  fi
+done
+
+if [ -z "$ARGO_DOMAIN" ]; then
+  echo -e "\e[1;31m[Cloudflared] 未能取得 Argo 域名，请检查 ${FILE_PATH}/argo.log\e[0m"
+  ARGO_DOMAIN="127.0.0.1"
+fi
+
 ISP=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F'"' '{print $26"-"$18}' || echo "0.0")
 
 > "${FILE_PATH}/list.txt"
-echo "vless://${UUID}@${IP}:${REALITY_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.nazhumi.com&fp=firefox&pbk=${public_key}&type=tcp#Reality-${ISP}" >> "${FILE_PATH}/list.txt"
+echo "vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.nazhumi.com&fp=firefox&pbk=${public_key}&type=tcp#Argo-Reality-${ISP}" >> "${FILE_PATH}/list.txt"
 
 base64 "${FILE_PATH}/list.txt" | tr -d '\n' > "${FILE_PATH}/sub.txt"
 cat "${FILE_PATH}/list.txt"
