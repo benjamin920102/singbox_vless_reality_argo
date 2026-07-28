@@ -1,11 +1,12 @@
 #!/bin/bash
 set -e
 
-export REALITY_PORT=${REALITY_PORT:-"80"}
+export ANYTLS_PORT=${ANYTLS_PORT:-"80"}
 
-cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
+CD_PATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "$PWD")"
+cd "$CD_PATH"
 
-export FILE_PATH="${PWD}/.npm"
+export FILE_PATH="${PWD}/.app"
 export DATA_PATH="${PWD}/singbox_data"
 mkdir -p "$FILE_PATH" "$DATA_PATH"
 
@@ -19,8 +20,6 @@ else
   chmod 600 "$UUID_FILE"
   echo -e "\e[1;32m[UUID] 首次生成并永久保存: $UUID\e[0m"
 fi
-
-[ ! -d "${FILE_PATH}" ] && mkdir -p "${FILE_PATH}"
 
 ARCH=$(uname -m)
 BASE_URL=""
@@ -71,39 +70,52 @@ if [ ! -f "$CF_BIN" ]; then
   chmod +x "$CF_BIN"
 fi
 
-KEY_FILE="${FILE_PATH}/key.txt"
-if [ -f "$KEY_FILE" ]; then
-  echo -e "\e[1;33m[密钥] 检测到已有密钥，复用...\e[0m"
-  private_key=$(grep "PrivateKey:" "$KEY_FILE" | awk '{print $2}')
-  public_key=$(grep "PublicKey:" "$KEY_FILE" | awk '{print $2}')
+if ! command -v openssl >/dev/null 2>&1; then
+  cat > "${FILE_PATH}/private.key" <<'EOF'
+-----BEGIN EC PARAMETERS-----
+BgqghkjOPQQBw==
+-----END EC PARAMETERS-----
+-----BEGIN EC PRIVATE KEY-----
+MHcCAQEEIM4792SEtPqIt1ywqTd/0bYidBqpYV/+siNnfBYsdUYsAoGCCqGSM49
+AwEHoUQDQgAE1kHafPj07rJG+HboH2ekAI4r+e6TL38GWASAnngZreoQDF16ARa
+/TsyLyFoPkhTxSbehH/OBEjHtSZGaDhMqQ==
+-----END EC PRIVATE KEY-----
+EOF
+  cat > "${FILE_PATH}/cert.pem" <<'EOF'
+-----BEGIN CERTIFICATE-----
+MIIBejCCASGgAwIBAgIUFWeQL3556PNJLp/veCFxGNj9crkwCgYIKoZIzj0EAwIw
+EzERMA8GA1UEAwwIYmluZy5jb20wHhcNMjUwMTAxMDEwMTAwWhcNMzUwMTAxMDEw
+MTAwWjATMREwDwYDVQQDDAhiaW5nLmNvbTBNBgqgGzM9AgEGCCqGSM49AwEHA0IA
+BNZB2nz49O6yRvh26B9npACOK/nuky9/BlgEgDZ54Ga3qEAxdeWv07Mi8h
+d5IR8Um3oR/zQRIx7UmRmg4TKmjUzBRMB0GA1UdDgQWBQTV1cFID7UISE7PLTBR
+BfGbgrkMNzAfBgNVHSMEGDAWgBTV1cFID7UISE7PLTBRBfGbgrkMNzAPBgNVHRMB
+Af8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIARDAJvg0vd/ytrQVvEcSm6XTlB+
+eQ6OFb9LbLYL9Zi+AiffoMbi4y/0YUQlTtz7as9S8/lciBF5VCUoVIKS+vX2g==
+-----END CERTIFICATE-----
+EOF
 else
-  echo -e "\e[1;33m[密钥] 首次生成 Reality 密钥对...\e[0m"
-  output=$("${FILE_MAP[sing-box]}" generate reality-keypair)
-  echo "$output" > "$KEY_FILE"
-  private_key=$(echo "$output" | awk '/PrivateKey:/ {print $2}')
-  public_key=$(echo "$output" | awk '/PublicKey:/ {print $2}')
-  chmod 600 "$KEY_FILE"
-  echo -e "\e[1;32m[密钥] 密钥已保存，重启后保持不变\e[0m"
+  openssl ecparam -genkey -name prime256v1 -out "${FILE_PATH}/private.key" 2>/dev/null
+  openssl req -new -x509 -days 3650 -key "${FILE_PATH}/private.key" -out "${FILE_PATH}/cert.pem" -subj "/CN=bing.com" 2>/dev/null
 fi
+chmod 600 "${FILE_PATH}/private.key"
 
 cat > "${FILE_PATH}/config.json" <<EOF
 {
   "log": { "disabled": true },
   "inbounds": [
     {
-      "type": "vless",
+      "type": "anytls",
       "listen": "::",
-      "listen_port": $REALITY_PORT,
-      "users": [{"uuid": "$UUID", "flow": "xtls-rprx-vision"}],
+      "listen_port": $ANYTLS_PORT,
+      "users": [
+        {
+          "password": "$UUID"
+        }
+      ],
       "tls": {
         "enabled": true,
-        "server_name": "www.nazhumi.com",
-        "reality": {
-          "enabled": true,
-          "handshake": {"server": "www.nazhumi.com", "server_port": 443},
-          "private_key": "$private_key",
-          "short_id": [""]
-        }
+        "certificate_path": "${FILE_PATH}/cert.pem",
+        "key_path": "${FILE_PATH}/private.key"
       }
     }
   ],
@@ -115,14 +127,13 @@ EOF
 SINGBOX_PID=$!
 echo "[SING-BOX] 启动完成 PID=$SINGBOX_PID"
 
-echo "[Cloudflared] 正在启动 Cloudflare Argo Tunnel..."
-nohup "$CF_BIN" tunnel --url http://127.0.0.1:${REALITY_PORT} --no-autoupdate > "${FILE_PATH}/argo.log" 2>&1 &
-CF_PID=$!
+echo "[Cloudflared] 正在启动 Cloudflare TCP Tunnel..."
+nohup "$CF_BIN" tunnel --url tcp://127.0.0.1:${ANYTLS_PORT} --no-autoupdate > "${FILE_PATH}/argo.log" 2>&1 &
 
 ARGO_DOMAIN=""
 for i in {1..30}; do
   sleep 2
-  ARGO_DOMAIN=$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "${FILE_PATH}/argo.log" | sed 's|https://||' | tail -n 1)
+  ARGO_DOMAIN=$(grep -oE '[a-zA-Z0-9-]+\.trycloudflare\.com' "${FILE_PATH}/argo.log" | tail -n 1)
   if [ -n "$ARGO_DOMAIN" ]; then
     echo -e "\e[1;32m[Cloudflared] 成功获取 Argo 域名: ${ARGO_DOMAIN}\e[0m"
     break
@@ -137,7 +148,7 @@ fi
 ISP=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F'"' '{print $26"-"$18}' || echo "0.0")
 
 > "${FILE_PATH}/list.txt"
-echo "vless://${UUID}@${ARGO_DOMAIN}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.nazhumi.com&fp=firefox&pbk=${public_key}&type=tcp#Argo-Reality-${ISP}" >> "${FILE_PATH}/list.txt"
+echo "anytls://${UUID}@${ARGO_DOMAIN}:443?sni=bing.com&insecure=1#Argo-AnyTLS-${ISP}" >> "${FILE_PATH}/list.txt"
 
 base64 "${FILE_PATH}/list.txt" | tr -d '\n' > "${FILE_PATH}/sub.txt"
 cat "${FILE_PATH}/list.txt"
