@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-export ANYTLS_PORT=${ANYTLS_PORT:-"80"}
+export VLESS_PORT=${VLESS_PORT:-"80"}
 
 CD_PATH="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "$PWD")"
 cd "$CD_PATH"
@@ -70,53 +70,19 @@ if [ ! -f "$CF_BIN" ]; then
   chmod +x "$CF_BIN"
 fi
 
-if ! command -v openssl >/dev/null 2>&1; then
-  cat > "${FILE_PATH}/private.key" <<'EOF'
------BEGIN EC PARAMETERS-----
-BgqghkjOPQQBw==
------END EC PARAMETERS-----
------BEGIN EC PRIVATE KEY-----
-MHcCAQEEIM4792SEtPqIt1ywqTd/0bYidBqpYV/+siNnfBYsdUYsAoGCCqGSM49
-AwEHoUQDQgAE1kHafPj07rJG+HboH2ekAI4r+e6TL38GWASAnngZreoQDF16ARa
-/TsyLyFoPkhTxSbehH/OBEjHtSZGaDhMqQ==
------END EC PRIVATE KEY-----
-EOF
-  cat > "${FILE_PATH}/cert.pem" <<'EOF'
------BEGIN CERTIFICATE-----
-MIIBejCCASGgAwIBAgIUFWeQL3556PNJLp/veCFxGNj9crkwCgYIKoZIzj0EAwIw
-EzERMA8GA1UEAwwIYmluZy5jb20wHhcNMjUwMTAxMDEwMTAwWhcNMzUwMTAxMDEw
-MTAwWjATMREwDwYDVQQDDAhiaW5nLmNvbTBNBgqgGzM9AgEGCCqGSM49AwEHA0IA
-BNZB2nz49O6yRvh26B9npACOK/nuky9/BlgEgDZ54Ga3qEAxdeWv07Mi8h
-d5IR8Um3oR/zQRIx7UmRmg4TKmjUzBRMB0GA1UdDgQWBQTV1cFID7UISE7PLTBR
-BfGbgrkMNzAfBgNVHSMEGDAWgBTV1cFID7UISE7PLTBRBfGbgrkMNzAPBgNVHRMB
-Af8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIARDAJvg0vd/ytrQVvEcSm6XTlB+
-eQ6OFb9LbLYL9Zi+AiffoMbi4y/0YUQlTtz7as9S8/lciBF5VCUoVIKS+vX2g==
------END CERTIFICATE-----
-EOF
-else
-  openssl ecparam -genkey -name prime256v1 -out "${FILE_PATH}/private.key" 2>/dev/null
-  openssl req -new -x509 -days 3650 -key "${FILE_PATH}/private.key" -out "${FILE_PATH}/cert.pem" -subj "/CN=bing.com" 2>/dev/null
-fi
-chmod 600 "${FILE_PATH}/private.key"
-
 cat > "${FILE_PATH}/config.json" <<EOF
 {
   "log": { "disabled": true },
   "inbounds": [
     {
-      "type": "anytls",
+      "type": "vless",
       "listen": "::",
-      "listen_port": $ANYTLS_PORT,
+      "listen_port": $VLESS_PORT,
       "users": [
         {
-          "password": "$UUID"
+          "uuid": "$UUID"
         }
-      ],
-      "tls": {
-        "enabled": true,
-        "certificate_path": "${FILE_PATH}/cert.pem",
-        "key_path": "${FILE_PATH}/private.key"
-      }
+      ]
     }
   ],
   "outbounds": [{"type": "direct"}]
@@ -127,8 +93,8 @@ EOF
 SINGBOX_PID=$!
 echo "[SING-BOX] 启动完成 PID=$SINGBOX_PID"
 
-echo "[Cloudflared] 正在启动 Cloudflare TCP Tunnel..."
-nohup "$CF_BIN" tunnel --url tcp://127.0.0.1:${ANYTLS_PORT} --no-autoupdate > "${FILE_PATH}/argo.log" 2>&1 &
+echo "[Cloudflared] 正在启动 Cloudflare Argo Tunnel..."
+nohup "$CF_BIN" tunnel --url http://127.0.0.1:${VLESS_PORT} --no-autoupdate > "${FILE_PATH}/argo.log" 2>&1 &
 
 ARGO_DOMAIN=""
 for i in {1..30}; do
@@ -148,7 +114,7 @@ fi
 ISP=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F'"' '{print $26"-"$18}' || echo "0.0")
 
 > "${FILE_PATH}/list.txt"
-echo "anytls://${UUID}@${ARGO_DOMAIN}:443?sni=bing.com&insecure=1#Argo-AnyTLS-${ISP}" >> "${FILE_PATH}/list.txt"
+echo "vless://${UUID}@${ARGO_DOMAIN}:443?type=ws&security=tls&host=${ARGO_DOMAIN}&sni=${ARGO_DOMAIN}#Argo-VLESS-${ISP}" >> "${FILE_PATH}/list.txt"
 
 base64 "${FILE_PATH}/list.txt" | tr -d '\n' > "${FILE_PATH}/sub.txt"
 cat "${FILE_PATH}/list.txt"
