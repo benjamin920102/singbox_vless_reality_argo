@@ -5,18 +5,26 @@ export VLESS_PORT=${VLESS_PORT:-"80"}
 
 # 強制指定工作目錄為 /root
 export FILE_PATH="/root"
-export DATA_PATH="/root/singbox_data"
+export DATA_PATH="${FILE_PATH}/singbox_data"
+
+# 檢查目錄寫入權限，若失敗則退回使用 /tmp
+if ! mkdir -p "$DATA_PATH" 2>/dev/null; then
+  echo -e "\e[1;33m[警告] 無法寫入 $FILE_PATH，自動切換工作目錄至 /tmp\e[0m"
+  export FILE_PATH="/tmp"
+  export DATA_PATH="/tmp/singbox_data"
+  mkdir -p "$DATA_PATH"
+fi
+
 cd "$FILE_PATH"
-mkdir -p "$DATA_PATH"
 
 UUID_FILE="${FILE_PATH}/uuid.txt"
 if [ -f "$UUID_FILE" ]; then
   UUID=$(cat "$UUID_FILE")
   echo -e "\e[1;33m[UUID] 復用固定 UUID: $UUID\e[0m"
 else
-  UUID=$(cat /proc/sys/kernel/random/uuid)
+  UUID=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || echo "f23c0d8c-20ec-4f23-88fe-a76fb0c1ff36")
   echo "$UUID" > "$UUID_FILE"
-  chmod 600 "$UUID_FILE"
+  chmod 600 "$UUID_FILE" 2>/dev/null || true
   echo -e "\e[1;32m[UUID] 首次生成並永久保存: $UUID\e[0m"
 fi
 
@@ -52,21 +60,21 @@ download_file() {
   fi
 }
 
-# 下載 sing-box 直接存為 /root/sing-box
+# 下載 sing-box 直接存為 /root/sing-box (或 /tmp/sing-box)
 SINGBOX_BIN="${FILE_PATH}/sing-box"
 if [ ! -f "$SINGBOX_BIN" ]; then
   download_file "${BASE_URL}/sb" "$SINGBOX_BIN"
-  chmod +x "$SINGBOX_BIN"
 fi
+chmod +x "$SINGBOX_BIN" 2>/dev/null || true
 
-# 下載 cloudflared 直接存為 /root/cloudflared
+# 下載 cloudflared 直接存為 /root/cloudflared (或 /tmp/cloudflared)
 CF_BIN="${FILE_PATH}/cloudflared"
 if [ ! -f "$CF_BIN" ]; then
   download_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" "$CF_BIN"
-  chmod +x "$CF_BIN"
 fi
+chmod +x "$CF_BIN" 2>/dev/null || true
 
-# 寫入 /root/config.json，加入 WebSocket 傳輸協議
+# 寫入 config.json，加入 WebSocket 傳輸協議
 cat > "${FILE_PATH}/config.json" <<EOF
 {
   "log": { "disabled": true },
@@ -89,6 +97,9 @@ cat > "${FILE_PATH}/config.json" <<EOF
   "outbounds": [{"type": "direct"}]
 }
 EOF
+
+# 啟動前再次確保可執行權限
+chmod +x "$SINGBOX_BIN" "$CF_BIN" 2>/dev/null || true
 
 # 啟動 sing-box
 "$SINGBOX_BIN" run -c "${FILE_PATH}/config.json" &
@@ -141,6 +152,8 @@ schedule_restart() {
       kill "$SINGBOX_PID" 2>/dev/null || true
       sleep 3
 
+      # 重啟前確保執行權限
+      chmod +x "$SINGBOX_BIN" 2>/dev/null || true
       "$SINGBOX_BIN" run -c "${FILE_PATH}/config.json" &
       SINGBOX_PID=$!
 
