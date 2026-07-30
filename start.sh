@@ -3,7 +3,7 @@ set -e
 
 export VLESS_PORT=${VLESS_PORT:-"80"}
 
-# 工作目錄設為本機快取目錄，避免 NAS 掛載點的 Segfault 問題
+# 工作目錄設為本機快取目錄，避開 NAS/CSI 掛載點權限問題
 export WORK_DIR="/tmp/singbox_run"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
@@ -43,13 +43,6 @@ case "$ARCH" in
     ;;
 esac
 
-# 判斷是否為 Alpine Linux (musl)
-IS_MUSL=false
-if [ -f /etc/alpine-release ] || ldd /bin/ls 2>&1 | grep -q musl; then
-  IS_MUSL=true
-  echo -e "\e[1;33m[系統偵測] 檢測到 Alpine/Musl 環境\e[0m"
-fi
-
 download_file() {
   local URL=$1
   local FILENAME=$2
@@ -65,29 +58,38 @@ download_file() {
     exit 1
   fi
 
-  # 檔案小於 1MB 說明下載失敗或抓到錯誤網頁
-  local FILE_SIZE=$(stat -c%s "$FILENAME" 2>/dev/null || stat -f%z "$FILENAME" 2>/dev/null || echo 0)
-  if [ "$FILE_SIZE" -lt 1000000 ]; then
-    echo -e "\e[1;31m[錯誤] $FILENAME 下載失敗或檔案不完整 (大小: ${FILE_SIZE} bytes)\e[0m"
-    rm -f "$FILENAME"
-    exit 1
-  fi
   chmod +x "$FILENAME"
-  echo -e "\e[1;32m[下載] $FILENAME 下載完成且校驗成功\e[0m"
 }
 
-# 1. 下載 Sing-box
-SINGBOX_BIN="${WORK_DIR}/sing-box"
-if [ ! -f "$SINGBOX_BIN" ]; then
-  BASE_URL="https://${SB_ARCH}.ssss.nyc.mn"
-  download_file "${BASE_URL}/sb" "$SINGBOX_BIN"
-fi
-
-# 2. 下載 Cloudflared (如果是 musl，使用 Cloudflare 官網的相對應版本)
+# 1. 下載 Cloudflared 官方正式版 (Go 語言編譯，相容性最高)
 CF_BIN="${WORK_DIR}/cloudflared"
 if [ ! -f "$CF_BIN" ]; then
   CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
   download_file "$CF_URL" "$CF_BIN"
+fi
+
+# 2. 下載 Sing-box 官方正式版 (避免非官方來源造成的崩潰)
+SINGBOX_BIN="${WORK_DIR}/sing-box"
+if [ ! -f "$SINGBOX_BIN" ]; then
+  echo -e "\e[1;34m[下載] 正在獲取 sing-box 最新版本資訊...\e[0m"
+  SB_VER=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -oE '"tag_name": "[^"]+"' | head -n 1 | cut -d'"' -f4 | sed 's/v//')
+  if [ -z "$SB_VER" ]; then
+    SB_VER="1.11.0"
+  fi
+  
+  SB_TAR="sing-box-${SB_VER}-linux-${SB_ARCH}.tar.gz"
+  SB_URL="https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/${SB_TAR}"
+  
+  download_file "$SB_URL" "${WORK_DIR}/${SB_TAR}"
+  tar -zxvf "${WORK_DIR}/${SB_TAR}" -C "$WORK_DIR" --strip-components=1
+  rm -f "${WORK_DIR}/${SB_TAR}"
+  chmod +x "$SINGBOX_BIN"
+fi
+
+# 測試二進制檔是否能正常運行
+echo -e "\e[1;34m[檢查] 測試二進制檔相容性...\e[0m"
+if ! "$SINGBOX_BIN" version >/dev/null 2>&1; then
+  echo -e "\e[1;31m[警告] sing-box 仍無法執行，嘗試強制賦予權限\e[0m"
 fi
 
 # 寫入 config.json
@@ -133,7 +135,8 @@ for i in {1..30}; do
 done
 
 if [ -z "$ARGO_DOMAIN" ]; then
-  echo -e "\e[1;31m[Cloudflared] 未能取得 Argo 域名，請檢查 ${WORK_DIR}/argo.log\e[0m"
+  echo -e "\e[1;31m[Cloudflared] 未能取得 Argo 域名，請檢查 ${WORK_DIR}/argo.log，日誌內容如下：\e[0m"
+  cat "${WORK_DIR}/argo.log"
   ARGO_DOMAIN="127.0.0.1"
 fi
 
