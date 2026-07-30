@@ -3,21 +3,12 @@ set -e
 
 export VLESS_PORT=${VLESS_PORT:-"80"}
 
-# 強制指定工作目錄為 /root
-export FILE_PATH="/root"
-export DATA_PATH="${FILE_PATH}/singbox_data"
+# 工作目錄設為本機快取目錄，避免 NAS 掛載點的 Segfault 問題
+export WORK_DIR="/tmp/singbox_run"
+mkdir -p "$WORK_DIR"
+cd "$WORK_DIR"
 
-# 檢查目錄寫入權限，若失敗則退回使用 /tmp
-if ! mkdir -p "$DATA_PATH" 2>/dev/null; then
-  echo -e "\e[1;33m[警告] 無法寫入 $FILE_PATH，自動切換工作目錄至 /tmp\e[0m"
-  export FILE_PATH="/tmp"
-  export DATA_PATH="/tmp/singbox_data"
-  mkdir -p "$DATA_PATH"
-fi
-
-cd "$FILE_PATH"
-
-UUID_FILE="${FILE_PATH}/uuid.txt"
+UUID_FILE="${WORK_DIR}/uuid.txt"
 if [ -f "$UUID_FILE" ]; then
   UUID=$(cat "$UUID_FILE")
   echo -e "\e[1;33m[UUID] 復用固定 UUID: $UUID\e[0m"
@@ -28,54 +19,79 @@ else
   echo -e "\e[1;32m[UUID] 首次生成並永久保存: $UUID\e[0m"
 fi
 
+# 判斷 CPU 架構
 ARCH=$(uname -m)
-BASE_URL=""
 CF_ARCH=""
+SB_ARCH=""
 
-if [[ "$ARCH" == "arm"* ]] || [[ "$ARCH" == "aarch64" ]]; then
-  BASE_URL="https://arm64.ssss.nyc.mn"
-  CF_ARCH="arm64"
-elif [[ "$ARCH" == "amd64"* ]] || [[ "$ARCH" == "x86_64" ]]; then
-  BASE_URL="https://amd64.ssss.nyc.mn"
-  CF_ARCH="amd64"
-elif [[ "$ARCH" == "s390x" ]]; then
-  BASE_URL="https://s390x.ssss.nyc.mn"
-  CF_ARCH="s390x"
-else
-  echo "不支持的架構: $ARCH"
-  exit 1
+case "$ARCH" in
+  x86_64|amd64)
+    CF_ARCH="amd64"
+    SB_ARCH="amd64"
+    ;;
+  aarch64|arm64)
+    CF_ARCH="arm64"
+    SB_ARCH="arm64"
+    ;;
+  s390x)
+    CF_ARCH="s390x"
+    SB_ARCH="s390x"
+    ;;
+  *)
+    echo -e "\e[1;31m不支援的架構: $ARCH\e[0m"
+    exit 1
+    ;;
+esac
+
+# 判斷是否為 Alpine Linux (musl)
+IS_MUSL=false
+if [ -f /etc/alpine-release ] || ldd /bin/ls 2>&1 | grep -q musl; then
+  IS_MUSL=true
+  echo -e "\e[1;33m[系統偵測] 檢測到 Alpine/Musl 環境\e[0m"
 fi
 
 download_file() {
   local URL=$1
   local FILENAME=$2
   echo -e "\e[1;34m[下載] 正在下載 $FILENAME ...\e[0m"
+  
+  rm -f "$FILENAME"
   if command -v curl >/dev/null 2>&1; then
-    curl -L -# -o "$FILENAME" "$URL" && echo -e "\e[1;32m[下載] $FILENAME 完成 (curl)\e[0m"
+    curl -L -# -o "$FILENAME" "$URL"
   elif command -v wget >/dev/null 2>&1; then
-    wget --show-progress -q -O "$FILENAME" "$URL" && echo -e "\e[1;32m[下載] $FILENAME 完成 (wget)\e[0m"
+    wget --show-progress -q -O "$FILENAME" "$URL"
   else
     echo -e "\e[1;31m未找到 curl 或 wget\e[0m"
     exit 1
   fi
+
+  # 檔案小於 1MB 說明下載失敗或抓到錯誤網頁
+  local FILE_SIZE=$(stat -c%s "$FILENAME" 2>/dev/null || stat -f%z "$FILENAME" 2>/dev/null || echo 0)
+  if [ "$FILE_SIZE" -lt 1000000 ]; then
+    echo -e "\e[1;31m[錯誤] $FILENAME 下載失敗或檔案不完整 (大小: ${FILE_SIZE} bytes)\e[0m"
+    rm -f "$FILENAME"
+    exit 1
+  fi
+  chmod +x "$FILENAME"
+  echo -e "\e[1;32m[下載] $FILENAME 下載完成且校驗成功\e[0m"
 }
 
-# 下載 sing-box 直接存為 /root/sing-box (或 /tmp/sing-box)
-SINGBOX_BIN="${FILE_PATH}/sing-box"
+# 1. 下載 Sing-box
+SINGBOX_BIN="${WORK_DIR}/sing-box"
 if [ ! -f "$SINGBOX_BIN" ]; then
+  BASE_URL="https://${SB_ARCH}.ssss.nyc.mn"
   download_file "${BASE_URL}/sb" "$SINGBOX_BIN"
 fi
-chmod +x "$SINGBOX_BIN" 2>/dev/null || true
 
-# 下載 cloudflared 直接存為 /root/cloudflared (或 /tmp/cloudflared)
-CF_BIN="${FILE_PATH}/cloudflared"
+# 2. 下載 Cloudflared (如果是 musl，使用 Cloudflare 官網的相對應版本)
+CF_BIN="${WORK_DIR}/cloudflared"
 if [ ! -f "$CF_BIN" ]; then
-  download_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" "$CF_BIN"
+  CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
+  download_file "$CF_URL" "$CF_BIN"
 fi
-chmod +x "$CF_BIN" 2>/dev/null || true
 
-# 寫入 config.json，加入 WebSocket 傳輸協議
-cat > "${FILE_PATH}/config.json" <<EOF
+# 寫入 config.json
+cat > "${WORK_DIR}/config.json" <<EOF
 {
   "log": { "disabled": true },
   "inbounds": [
@@ -98,21 +114,18 @@ cat > "${FILE_PATH}/config.json" <<EOF
 }
 EOF
 
-# 啟動前再次確保可執行權限
-chmod +x "$SINGBOX_BIN" "$CF_BIN" 2>/dev/null || true
-
-# 啟動 sing-box
-"$SINGBOX_BIN" run -c "${FILE_PATH}/config.json" &
+# 啟動 Sing-box
+"$SINGBOX_BIN" run -c "${WORK_DIR}/config.json" &
 SINGBOX_PID=$!
 echo "[SING-BOX] 啟動完成 PID=$SINGBOX_PID"
 
 echo "[Cloudflared] 正在啟動 Cloudflare Argo Tunnel..."
-nohup "$CF_BIN" tunnel --url http://127.0.0.1:${VLESS_PORT} --no-autoupdate > "${FILE_PATH}/argo.log" 2>&1 &
+nohup "$CF_BIN" tunnel --url http://127.0.0.1:${VLESS_PORT} --no-autoupdate > "${WORK_DIR}/argo.log" 2>&1 &
 
 ARGO_DOMAIN=""
 for i in {1..30}; do
   sleep 2
-  ARGO_DOMAIN=$(grep -oE '[a-zA-Z0-9-]+\.trycloudflare\.com' "${FILE_PATH}/argo.log" | tail -n 1)
+  ARGO_DOMAIN=$(grep -oE '[a-zA-Z0-9-]+\.trycloudflare\.com' "${WORK_DIR}/argo.log" | tail -n 1)
   if [ -n "$ARGO_DOMAIN" ]; then
     echo -e "\e[1;32m[Cloudflared] 成功獲取 Argo 域名: ${ARGO_DOMAIN}\e[0m"
     break
@@ -120,19 +133,19 @@ for i in {1..30}; do
 done
 
 if [ -z "$ARGO_DOMAIN" ]; then
-  echo -e "\e[1;31m[Cloudflared] 未能取得 Argo 域名，請檢查 ${FILE_PATH}/argo.log\e[0m"
+  echo -e "\e[1;31m[Cloudflared] 未能取得 Argo 域名，請檢查 ${WORK_DIR}/argo.log\e[0m"
   ARGO_DOMAIN="127.0.0.1"
 fi
 
 ISP=$(curl -s --max-time 2 https://speed.cloudflare.com/meta | awk -F'"' '{print $26"-"$18}' || echo "0.0")
 
-> "${FILE_PATH}/list.txt"
-echo "vless://${UUID}@${ARGO_DOMAIN}:443?type=ws&path=%2F&security=tls&host=${ARGO_DOMAIN}&sni=${ARGO_DOMAIN}#Argo-VLESS-${ISP}" >> "${FILE_PATH}/list.txt"
+> "${WORK_DIR}/list.txt"
+echo "vless://${UUID}@${ARGO_DOMAIN}:443?type=ws&path=%2F&security=tls&host=${ARGO_DOMAIN}&sni=${ARGO_DOMAIN}#Argo-VLESS-${ISP}" >> "${WORK_DIR}/list.txt"
 
-base64 "${FILE_PATH}/list.txt" | tr -d '\n' > "${FILE_PATH}/sub.txt"
+base64 "${WORK_DIR}/list.txt" | tr -d '\n' > "${WORK_DIR}/sub.txt"
 echo -e "\n--- 節點連結 ---"
-cat "${FILE_PATH}/list.txt"
-echo -e "\n\e[1;32m${FILE_PATH}/sub.txt 已儲存\e[0m"
+cat "${WORK_DIR}/list.txt"
+echo -e "\n\e[1;32m${WORK_DIR}/sub.txt 已儲存至 ${WORK_DIR}/sub.txt\e[0m"
 
 schedule_restart() {
   echo "[定時重啟:Sing-box] 已啟動（北京時間 00:03）"
@@ -152,9 +165,7 @@ schedule_restart() {
       kill "$SINGBOX_PID" 2>/dev/null || true
       sleep 3
 
-      # 重啟前確保執行權限
-      chmod +x "$SINGBOX_BIN" 2>/dev/null || true
-      "$SINGBOX_BIN" run -c "${FILE_PATH}/config.json" &
+      "$SINGBOX_BIN" run -c "${WORK_DIR}/config.json" &
       SINGBOX_PID=$!
 
       echo "[Sing-box重啟完成] 新 PID: $SINGBOX_PID"
