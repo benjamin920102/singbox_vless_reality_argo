@@ -41,10 +41,11 @@ fi
 download_file() {
   local URL=$1
   local FILENAME=$2
+  echo -e "\e[1;34m[下載] 正在下載 $FILENAME ...\e[0m"
   if command -v curl >/dev/null 2>&1; then
-    curl -L -sS -o "$FILENAME" "$URL" && echo -e "\e[1;32m下載 $FILENAME (curl)\e[0m"
+    curl -L -# -o "$FILENAME" "$URL" && echo -e "\e[1;32m[下載] $FILENAME 完成 (curl)\e[0m"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$FILENAME" "$URL" && echo -e "\e[1;32m下載 $FILENAME (wget)\e[0m"
+    wget --show-progress -q -O "$FILENAME" "$URL" && echo -e "\e[1;32m[下載] $FILENAME 完成 (wget)\e[0m"
   else
     echo -e "\e[1;31m未找到 curl 或 wget\e[0m"
     exit 1
