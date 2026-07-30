@@ -61,36 +61,60 @@ download_file() {
   chmod +x "$FILENAME"
 }
 
-# 1. 下載 Cloudflared 官方正式版 (Go 語言編譯，相容性最高)
+# 1. 下載 Cloudflared
 CF_BIN="${WORK_DIR}/cloudflared"
 if [ ! -f "$CF_BIN" ]; then
   CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
   download_file "$CF_URL" "$CF_BIN"
 fi
 
-# 2. 下載 Sing-box 靜態編譯版 (增加 -musl 以避免動態連結庫缺失導致的 cannot execute 錯誤)
+# 2. 下載 Sing-box（包含多版本自動重試機制）
 SINGBOX_BIN="${WORK_DIR}/sing-box"
-if [ ! -f "$SINGBOX_BIN" ]; then
+
+if [ ! -x "$SINGBOX_BIN" ] || ! "$SINGBOX_BIN" version >/dev/null 2>&1; then
+  rm -f "$SINGBOX_BIN"
   echo -e "\e[1;34m[下載] 正在獲取 sing-box 最新版本資訊...\e[0m"
   SB_VER=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep -oE '"tag_name": "[^"]+"' | head -n 1 | cut -d'"' -f4 | sed 's/v//')
   if [ -z "$SB_VER" ]; then
     SB_VER="1.11.0"
   fi
-  
-  # 此處指定 -musl 靜態連結檔
-  SB_TAR="sing-box-${SB_VER}-linux-${SB_ARCH}-musl.tar.gz"
-  SB_URL="https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/${SB_TAR}"
-  
-  download_file "$SB_URL" "${WORK_DIR}/${SB_TAR}"
-  tar -zxvf "${WORK_DIR}/${SB_TAR}" -C "$WORK_DIR" --strip-components=1
-  rm -f "${WORK_DIR}/${SB_TAR}"
-  chmod +x "$SINGBOX_BIN"
-fi
 
-# 測試二進制檔是否能正常運行
-echo -e "\e[1;34m[檢查] 測試二進制檔相容性...\e[0m"
-if ! "$SINGBOX_BIN" version >/dev/null 2>&1; then
-  echo -e "\e[1;31m[警告] sing-box 仍無法執行，嘗試強制賦予權限\e[0m"
+  # 嘗試組合：優先下載 musl，不行再換 glibc
+  TAR_NAMES=(
+    "sing-box-${SB_VER}-linux-${SB_ARCH}-musl.tar.gz"
+    "sing-box-${SB_VER}-linux-${SB_ARCH}.tar.gz"
+  )
+
+  SUCCESS=0
+  for SB_TAR in "${TAR_NAMES[@]}"; do
+    SB_URL="https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/${SB_TAR}"
+    echo -e "\e[1;34m[嘗試] 正在下載 ${SB_TAR}...\e[0m"
+    
+    if download_file "$SB_URL" "${WORK_DIR}/${SB_TAR}"; then
+      # 解設並取出 sing-box 執行檔
+      tar -zxvf "${WORK_DIR}/${SB_TAR}" -C "$WORK_DIR" --wildcards '*/sing-box' --strip-components=1 || \
+      tar -zxvf "${WORK_DIR}/${SB_TAR}" -C "$WORK_DIR" --strip-components=1
+      
+      rm -f "${WORK_DIR}/${SB_TAR}"
+      chmod +x "$SINGBOX_BIN"
+
+      # 驗證是否真的能執行
+      if "$SINGBOX_BIN" version >/dev/null 2>&1; then
+        echo -e "\e[1;32m[成功] sing-box 測試執行成功！\e[0m"
+        SUCCESS=1
+        break
+      else
+        echo -e "\e[1;33m[警告] ${SB_TAR} 下載後無法在當前系統運行，切換下一個版本...\e[0m"
+        rm -f "$SINGBOX_BIN"
+      fi
+    fi
+  done
+
+  if [ "$SUCCESS" -eq 0 ]; then
+    echo -e "\e[1;31m[錯誤] 所有預編譯版本均無法執行，可能是系統環境缺少 libc 相容層。\e[0m"
+    echo -e "\e[1;31m若您使用的是 Alpine Linux，請在系統中執行：apk add gcompat libc6-compat\e[0m"
+    exit 1
+  fi
 fi
 
 # 寫入 config.json
@@ -117,10 +141,15 @@ cat > "${WORK_DIR}/config.json" <<EOF
 }
 EOF
 
-# 啟動 Sing-box
-"$SINGBOX_BIN" run -c "${WORK_DIR}/config.json" &
-SINGBOX_PID=$!
-echo "[SING-BOX] 啟動完成 PID=$SINGBOX_PID"
+# 啟動 Sing-box (確認存在並可執行才啟動)
+if [ -x "$SINGBOX_BIN" ]; then
+  "$SINGBOX_BIN" run -c "${WORK_DIR}/config.json" &
+  SINGBOX_PID=$!
+  echo "[SING-BOX] 啟動完成 PID=$SINGBOX_PID"
+else
+  echo -e "\e[1;31m[錯誤] 無法啟動 Sing-box，檔案不存在或不可執行\e[0m"
+  exit 1
+fi
 
 echo "[Cloudflared] 正在啟動 Cloudflare Argo Tunnel..."
 nohup "$CF_BIN" tunnel --url http://127.0.0.1:${VLESS_PORT} --no-autoupdate > "${WORK_DIR}/argo.log" 2>&1 &
