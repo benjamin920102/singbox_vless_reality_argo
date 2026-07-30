@@ -68,7 +68,7 @@ if [ ! -f "$CF_BIN" ]; then
   download_file "$CF_URL" "$CF_BIN"
 fi
 
-# 2. 下載 Sing-box 官方正式版 (避免非官方來源造成的崩潰)
+# 2. 下載 Sing-box 靜態編譯版 (增加 -musl 以避免動態連結庫缺失導致的 cannot execute 錯誤)
 SINGBOX_BIN="${WORK_DIR}/sing-box"
 if [ ! -f "$SINGBOX_BIN" ]; then
   echo -e "\e[1;34m[下載] 正在獲取 sing-box 最新版本資訊...\e[0m"
@@ -77,7 +77,8 @@ if [ ! -f "$SINGBOX_BIN" ]; then
     SB_VER="1.11.0"
   fi
   
-  SB_TAR="sing-box-${SB_VER}-linux-${SB_ARCH}.tar.gz"
+  # 此處指定 -musl 靜態連結檔
+  SB_TAR="sing-box-${SB_VER}-linux-${SB_ARCH}-musl.tar.gz"
   SB_URL="https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/${SB_TAR}"
   
   download_file "$SB_URL" "${WORK_DIR}/${SB_TAR}"
