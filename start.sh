@@ -1,11 +1,11 @@
 #!/bin/bash
 set -e
 
-export VLESS_PORT=${VLESS_PORT:-"80"}
+export VLESS_PORT=${VLESS_PORT:-"8080"}
 
-# 強制指定工作目錄為 /root
-export FILE_PATH="/root"
-export DATA_PATH="/root/singbox_data"
+# 自動取得當前使用者的家目錄
+export FILE_PATH="$HOME"
+export DATA_PATH="${FILE_PATH}/singbox_data"
 cd "$FILE_PATH"
 mkdir -p "$DATA_PATH"
 
@@ -21,17 +21,13 @@ else
 fi
 
 ARCH=$(uname -m)
-BASE_URL=""
 CF_ARCH=""
 
 if [[ "$ARCH" == "arm"* ]] || [[ "$ARCH" == "aarch64" ]]; then
-  BASE_URL="https://arm64.ssss.nyc.mn"
   CF_ARCH="arm64"
 elif [[ "$ARCH" == "amd64"* ]] || [[ "$ARCH" == "x86_64" ]]; then
-  BASE_URL="https://amd64.ssss.nyc.mn"
   CF_ARCH="amd64"
 elif [[ "$ARCH" == "s390x" ]]; then
-  BASE_URL="https://s390x.ssss.nyc.mn"
   CF_ARCH="s390x"
 else
   echo "不支持的架構: $ARCH"
@@ -51,21 +47,25 @@ download_file() {
   fi
 }
 
-# 下載 sing-box 直接存為 /root/sing-box
+# 下載 sing-box 官方發行版 (避免非官方來源問題)
 SINGBOX_BIN="${FILE_PATH}/sing-box"
 if [ ! -f "$SINGBOX_BIN" ]; then
-  download_file "${BASE_URL}/sb" "$SINGBOX_BIN"
+  SB_VERSION="1.8.10"
+  SB_URL="https://github.com/SagerNet/sing-box/releases/download/v${SB_VERSION}/sing-box-${SB_VERSION}-linux-${CF_ARCH}.tar.gz"
+  download_file "$SB_URL" "${FILE_PATH}/sing-box.tar.gz"
+  tar -xzf "${FILE_PATH}/sing-box.tar.gz" -C "$FILE_PATH" --strip-components=1 "sing-box-${SB_VERSION}-linux-${CF_ARCH}/sing-box"
+  rm -f "${FILE_PATH}/sing-box.tar.gz"
   chmod +x "$SINGBOX_BIN"
 fi
 
-# 下載 cloudflared 直接存為 /root/cloudflared
+# 下載 cloudflared 官方發行版
 CF_BIN="${FILE_PATH}/cloudflared"
 if [ ! -f "$CF_BIN" ]; then
   download_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" "$CF_BIN"
   chmod +x "$CF_BIN"
 fi
 
-# 寫入 /root/config.json，加入 WebSocket 傳輸協議
+# 寫入 config.json，加入 WebSocket 傳輸協議
 cat > "${FILE_PATH}/config.json" <<EOF
 {
   "log": { "disabled": true },
