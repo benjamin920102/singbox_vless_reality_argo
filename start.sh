@@ -1,9 +1,10 @@
 #!/bin/bash
 set -e
 
+# 改用非 root 可使用的 8080 埠
 export VLESS_PORT=${VLESS_PORT:-"8080"}
 
-# 自動取得當前使用者的家目錄
+# 自動指定工作目錄為當前使用者的家目錄
 export FILE_PATH="$HOME"
 export DATA_PATH="${FILE_PATH}/singbox_data"
 cd "$FILE_PATH"
@@ -21,13 +22,17 @@ else
 fi
 
 ARCH=$(uname -m)
+BASE_URL=""
 CF_ARCH=""
 
 if [[ "$ARCH" == "arm"* ]] || [[ "$ARCH" == "aarch64" ]]; then
+  BASE_URL="https://arm64.ssss.nyc.mn"
   CF_ARCH="arm64"
 elif [[ "$ARCH" == "amd64"* ]] || [[ "$ARCH" == "x86_64" ]]; then
+  BASE_URL="https://amd64.ssss.nyc.mn"
   CF_ARCH="amd64"
 elif [[ "$ARCH" == "s390x" ]]; then
+  BASE_URL="https://s390x.ssss.nyc.mn"
   CF_ARCH="s390x"
 else
   echo "不支持的架構: $ARCH"
@@ -47,18 +52,14 @@ download_file() {
   fi
 }
 
-# 下載 sing-box 官方發行版 (避免非官方來源問題)
+# 下載 sing-box 直接存為家目錄下的 sing-box
 SINGBOX_BIN="${FILE_PATH}/sing-box"
 if [ ! -f "$SINGBOX_BIN" ]; then
-  SB_VERSION="1.8.10"
-  SB_URL="https://github.com/SagerNet/sing-box/releases/download/v${SB_VERSION}/sing-box-${SB_VERSION}-linux-${CF_ARCH}.tar.gz"
-  download_file "$SB_URL" "${FILE_PATH}/sing-box.tar.gz"
-  tar -xzf "${FILE_PATH}/sing-box.tar.gz" -C "$FILE_PATH" --strip-components=1 "sing-box-${SB_VERSION}-linux-${CF_ARCH}/sing-box"
-  rm -f "${FILE_PATH}/sing-box.tar.gz"
+  download_file "${BASE_URL}/sb" "$SINGBOX_BIN"
   chmod +x "$SINGBOX_BIN"
 fi
 
-# 下載 cloudflared 官方發行版
+# 下載 cloudflared 直接存為家目錄下的 cloudflared
 CF_BIN="${FILE_PATH}/cloudflared"
 if [ ! -f "$CF_BIN" ]; then
   download_file "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" "$CF_BIN"
